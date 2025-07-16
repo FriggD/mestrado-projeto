@@ -1,0 +1,6 @@
+*/*.ld
+data/*
+data/
+.venv
+output/
+src/lib/

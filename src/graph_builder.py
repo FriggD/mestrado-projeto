@@ -9,7 +9,7 @@ import os
 
 
 class LDGraphBuilder:
-    def __init__(self, r2_threshold=0.8):
+    def __init__(self, r2_threshold=1):
         self.r2_threshold = r2_threshold
         self.node_encoder = LabelEncoder()
         
@@ -93,8 +93,29 @@ class LDGraphBuilder:
             unique_node_ids.update(batch_nodes_a + batch_nodes_b)
         
         print(f"Found {len(unique_node_ids)} unique nodes")
-        node_ids = list(unique_node_ids)
+        node_ids = list(unique_node_ids)[:10000]  # Limit to 10000 SNPs
+        print(f"Limited to {len(node_ids)} nodes")
         self.node_encoder.fit(node_ids)
+        
+        # Filter edges to only include limited nodes
+        node_ids_set = set(node_ids)
+        print("Filtering edges for limited nodes...")
+        filtered_edge_chunks = []
+        for batch_df in tqdm(df.iter_slices(n_rows=batch_size), desc="Filtering edges"):
+            batch_df = batch_df.with_columns([
+                pl.concat_str([pl.col('CHR_A'), pl.col('BP_A')], separator='_').alias('source_id'),
+                pl.concat_str([pl.col('CHR_B'), pl.col('BP_B')], separator='_').alias('target_id')
+            ])
+            
+            valid_edges = batch_df.filter(
+                pl.col('source_id').is_in(node_ids_set) & 
+                pl.col('target_id').is_in(node_ids_set)
+            )
+            
+            if len(valid_edges) > 0:
+                filtered_edge_chunks.append(valid_edges)
+        
+        df = pl.concat(filtered_edge_chunks) if filtered_edge_chunks else pl.DataFrame()
         
         # Create edges in batches
         print("Creating edges...")
@@ -152,7 +173,30 @@ class LDGraphBuilder:
             ])['node_id'].to_list()
             unique_node_ids.update(batch_nodes_a + batch_nodes_b)
         
-        nodes = self.create_nodes_from_ids(list(unique_node_ids))
+        # Limit nodes for visualization
+        limited_node_ids = list(unique_node_ids)[:10000]
+        print(f"Limiting visualization to {len(limited_node_ids)} nodes")
+        
+        # Filter edges for limited nodes
+        node_ids_set = set(limited_node_ids)
+        filtered_chunks = []
+        for batch_df in df.iter_slices(n_rows=batch_size):
+            batch_df = batch_df.with_columns([
+                pl.concat_str([pl.col('CHR_A'), pl.col('BP_A')], separator='_').alias('source_id'),
+                pl.concat_str([pl.col('CHR_B'), pl.col('BP_B')], separator='_').alias('target_id')
+            ])
+            
+            valid_edges = batch_df.filter(
+                pl.col('source_id').is_in(node_ids_set) & 
+                pl.col('target_id').is_in(node_ids_set)
+            )
+            
+            if len(valid_edges) > 0:
+                filtered_chunks.append(valid_edges)
+        
+        df = pl.concat(filtered_chunks) if filtered_chunks else pl.DataFrame()
+        
+        nodes = self.create_nodes_from_ids(limited_node_ids)
         print("Adding nodes to visualization...")
         for batch_nodes in tqdm(nodes.iter_slices(n_rows=batch_size), desc="Adding nodes"):
             for row in batch_nodes.iter_rows(named=True):
@@ -170,12 +214,18 @@ class LDGraphBuilder:
                 target = f"{row['CHR_B']}_{row['BP_B']}"
                 net.add_edge(source, target, weight=float(row['R2']), title=f"R²={float(row['R2']):.3f}")
         
+        # Create output directory if it doesn't exist
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
         net.save_graph(output_file)
+        print(f"Visualization saved to: {os.path.abspath(output_file)}")
         return output_file
 
 
 def main():
-    builder = LDGraphBuilder(r2_threshold=0.8)
+    builder = LDGraphBuilder(r2_threshold=1)
     
     # Example usage
     graph = builder.build_pytorch_geometric_graph('../data/chr1_ld.ld')
